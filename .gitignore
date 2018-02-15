@@ -287,12 +287,21 @@ __pycache__/
 *.odx.cs
 *.xsd.cs
 
-
+# example data that don't need to be stored
 build/CNTK.FSharp.dll
 examples/Cifar/[Cc]ifar-10-binary.tar.gz
 examples/Cifar/cifar-10-binary.tar
 examples/Cifar/cifar-10-binary/
 examples/Cifar/test/
 examples/Cifar/train/
+examples/Cifar/CIFAR-10_mean.xml
+examples/Cifar/Test_cntk_text.txt
+examples/Cifar/Train_cntk_text.txt
+examples/Cifar/test_map.txt
+examples/Cifar/test_regrLabels.txt
+examples/Cifar/train_map.txt
+examples/Cifar/train_regrLabels.txt
+examples/Cifar/try.fsx
+
 build/
 .vscode/

@@ -1,14 +1,17 @@
-open System.Runtime.InteropServices
+open System.Xml
+open System.Text
 #I "../../packages/FSharp.Data/lib/net45"
 #I "../../packages/SharpZipLib/lib/20"
 #r "FSharp.Data.dll"
 #r "ICSharpCode.SharpZipLib.dll"
-
+#r "System.Xml.Linq.dll"
 
 [<AutoOpen>]
 module cifarUtil = 
     open System.IO
+    open System.Xml.Linq
     open System.Drawing
+    open System.Runtime.InteropServices
     open System.IO.Compression
     open FSharp.Data
     open ICSharpCode.SharpZipLib.Tar
@@ -57,9 +60,11 @@ module cifarUtil =
             else pictures   
         readPictures []                 
 
+    /// reading the labels from "batches.meta.txt"
     let getLabelNames src =
         File.ReadAllLines <| src @@ "batches.meta.txt"
 
+    /// load the data from the bin files
     let loadData dims src =
         let files = Directory.GetFiles(src,"*.bin")
         let groups = 
@@ -77,64 +82,118 @@ module cifarUtil =
                  )  []    
         foldGroup groups.[0], foldGroup groups.[1], getLabelNames src
 
-        
-    let saveAsPNG fName (im:byte [,,]) (iDim, jDim) = 
-        let bArray = Array.zeroCreate (iDim*jDim*3)
+    /// converts to a bitmap
+    let toBitmap (width, height) (im:byte [,,]) = 
+        let bArray = Array.zeroCreate (3*width*height)
         bArray
         |> Array.iteri (fun i _ ->
-            let x = i/(3*iDim)
-            let y = ( i%(3*iDim) ) / 3
+            let x = i/(3*width)
+            let y = ( i%(3*width) ) / 3
             let c = i%3
-            bArray.[i] <- byte im.[c,x,y])
-        use bmp = new Bitmap(iDim, jDim, Imaging.PixelFormat.Format24bppRgb)        
+            bArray.[i] <- byte im.[x,y,c])
+        let bmp = new Bitmap(width, height, Imaging.PixelFormat.Format24bppRgb)        
         let bmpData = 
             bmp.LockBits(   Rectangle(0, 0,bmp.Width, bmp.Height),
                             Imaging.ImageLockMode.WriteOnly,
                             bmp.PixelFormat);
-
         let pNative = bmpData.Scan0;
         Marshal.Copy(bArray, 0, pNative, bArray.Length);
-
         bmp.UnlockBits(bmpData);
-
+        bmp
+        
+    /// saving a byte[3,iDm,height] array as a png 
+    let saveAsPNG (width, height) fName (im:byte [,,])  = 
+        use bmp = toBitmap (width, height) (im:byte [,,]) 
         bmp.Save(fName);
     
+    /// function to IO a byteArray:
+    /// (width,height) foldername fileNumber byte[,,]
     type SaveFunction =  (int*int) -> string -> int -> byte[,,] -> unit
-    let saveImageFunction (iDim,jDim) foldername iFile imData= 
-        let fName = Path.Combine (foldername, sprintf "%05d.png" iFile )
+    
+    /// save a image
+    let saveImageFunction (width,height) foldername iFile imData= 
+        let fName = foldername @@ sprintf "%05d.png" iFile 
         printfn "saving %s" fName
-        saveAsPNG fName imData (iDim,jDim)
+        saveAsPNG (width,height) fName imData
            
-
-    let  saveTrainImages (fo:SaveFunction option) (iDim,jDim)  (data: (byte * byte[]) list) foldername =
+    let  saveImages (fo:SaveFunction option) (width,height)  (data: (byte * byte[]) list) foldername =
         if  Directory.Exists(foldername) |> not then 
             Directory.CreateDirectory foldername |> ignore
         data 
         |> List.indexed
         |> List.fold (fun (acc:int[,,]) (iFile,(_label, im)) ->
-            let imData = Array3D.zeroCreate 3 iDim jDim
+            let imData = Array3D.zeroCreate width height 3
             im 
-            |> Array.splitInto (3)
-            |> Array.iteri (fun i ca -> 
-                ca |> Array.chunkBySize (iDim)
-                |> Array.iteri (fun j cv -> 
-                    cv |> Array.iteri (fun k b -> 
-                        imData.[i,j,k] <-   b
-                        acc.[i,j,k] <- acc.[i,j,k] + (int b))
+            |> Array.splitInto (3)                      // colors
+            |> Array.iteri (fun c ca -> 
+                ca |> Array.chunkBySize (width)
+                |> Array.iteri (fun x cv -> 
+                    cv |> Array.iteri (fun y b -> 
+                        imData.[x,y,c] <-   b
+                        acc.[x,y,c] <- acc.[x,y,c] + (int b))
             ))
             fo |> Option.iter (fun f ->
-                f (iDim,jDim) foldername iFile imData)
+                f (width,height) foldername iFile imData)
             acc
-        )   (Array3D.init 3 iDim jDim (fun _ _ _ -> 0))
+        )  (Array3D.zeroCreate width height 3)
         |> Array3D.map (fun  v -> v / data.Length) 
-    let getLabels:('a * 'b)list -> (int * 'a) list  = List.map fst >> List.indexed 
+    
+    /// get the labels from the loaded data
+    let getLabels:(byte * byte[])list -> (int * byte) list  = List.map fst >> List.indexed 
+    
+    /// computes the mean values
     let letGetMeanAndSave (width,height) folder  data=     
         let dirPath =  __SOURCE_DIRECTORY__ @@ folder
         let saveFunctionOption = 
             match System.IO.Directory.Exists <| dirPath with
             | false -> Some saveImageFunction
             | true -> None
-        saveTrainImages saveFunctionOption (width, height) data dirPath
+        saveImages saveFunctionOption (width, height) data dirPath
+
+    let xn = XName.Get 
+    let saveMeanXml (width:int,height:int) (fName:string) data =
+        let xDoc = XDocument()
+        let stringStream = new StringWriter()
+        data
+        |> Array3D.iteri ( fun i j k v ->
+                            let sFun = match i with 
+                                        | 0 -> sprintf " %e" 
+                                        | _ -> sprintf " %e\n" 
+                            let s = float v |> sFun                 
+                            s |> stringStream.Write  )
+
+        let datastr = stringStream.ToString();
+        let r = XElement(xn "opencv_storage",                    
+                    [   XElement(xn "Channel",3) 
+                        XElement(xn "Row",width) 
+                        XElement(xn "Col",height) 
+                        XElement(xn "MeanImg",
+                            XAttribute (xn "type_id", "opencv-matrix"),
+                            [
+                                XElement(xn "rows", 1)
+                                XElement(xn "cols",width*height*3)
+                                XElement(xn "dt", "f")
+                                XElement(xn "data", datastr)
+                            ])
+                    ]
+            )
+        xDoc.Add  r
+        let settings = XmlWriterSettings()
+        settings.Encoding <-  ASCIIEncoding();
+        use writer = XmlWriter.Create( fName, settings )
+        xDoc.Save( writer )
+        
+    let saveTxt filename (data:(byte * byte[]) list) = 
+        data
+        |> List.toArray
+        |> Array.Parallel.map (fun (l,d)-> 
+            d 
+            |> Array.fold (sprintf "%s %d") ""
+            |> sprintf "|labels %d |features %s" l )
+
+        |> fun lines -> File.WriteAllLines(filename, lines)
+        
+//////////////////////////////////////////////
 
 /// URL of the binary dataset
 let dataSetUrl = "http://www.cs.toronto.edu/~kriz/cifar-10-binary.tar.gz"
@@ -149,30 +208,80 @@ let width = 32;
 let height = 32;
 
 // Downloading the data
+// added some guard to protekt from long taking download
 if  __SOURCE_DIRECTORY__ @@ "test" 
     |> System.IO.Directory.Exists
     |> not then
+                // the actual download
                 download dataSetUrl dataFileName
-// get the data from the tar archive
-                decompress dataFileName
-                |> untar 
-                |> ignore
+                // get the data from the tar archive
+                let tar = decompress dataFileName
+                untar tar |> ignore
+                // deleting old data                
+                System.IO.File.Delete dataFileName
+                System.IO.File.Delete tar
+                
 
 // get the data  into memory
 let (trn,test,LabelNames) = 
-    @"C:\Users\siebkpte\fsharp\Cntk\CNTK.FSharp\examples\Cifar\cifar-10-binary\cifar-10-batches-bin"
+    __SOURCE_DIRECTORY__ @@ @"cifar-10-binary\cifar-10-batches-bin"
     |> loadData [nColors; width; height]
 
-// getting the labels of the training data
-let trnLabels = trn |> getLabels
-let testLabels = test |> getLabels
-
-// save the images and get the mean data
-
-// only saving if there is no train directory
+// only saving images if there is no train directory
 let dataMeanTraining =     
     letGetMeanAndSave (width,height) "train" trn
 let dataMeanTest =     
     letGetMeanAndSave (width,height) "test" test
 
-dataMeanTest.[2,0,0]
+// saving the trainign data to file
+let saveTExtWithGuard fn data = 
+    if System.IO.File.Exists fn |> not then 
+        saveTxt fn data 
+saveTExtWithGuard (__SOURCE_DIRECTORY__ @@ "Train_cntk_text.txt") trn
+saveTExtWithGuard (__SOURCE_DIRECTORY__ @@ "Test_cntk_text.txt") test 
+
+dataMeanTraining |> saveMeanXml (width, height) (__SOURCE_DIRECTORY__ @@ "CIFAR-10_mean.xml")
+
+// here some functions that i would preferred to use,
+// but that would need some CNTK custom reader
+
+// getting the labels of the training data
+let writeMap dir mapName data=
+    let foldername = __SOURCE_DIRECTORY__ @@ dir
+    data 
+    |> getLabels
+    |> List.map (fun (i,l) -> 
+        sprintf "%s\t%d" (foldername @@ sprintf "%05d.png" i) l
+        ) 
+    |> fun lines -> System.IO.File.WriteAllLines(__SOURCE_DIRECTORY__ @@ mapName,lines)
+
+writeMap "train"  "train_map.txt" trn
+writeMap "test"  "test_map.txt" test
+
+do 
+    trn
+    |> List.map (fun (l,d) ->
+        d 
+        |> Array.splitInto 3
+        |> Array.map (Array.map float >> Array.average >> (fun v -> v / 255.))
+        |> fun a -> sprintf "|regrLabels\t%f\t%f\t%f" a.[0] a.[1] a.[2])
+    |> fun lines -> System.IO.File.WriteAllLines(__SOURCE_DIRECTORY__ @@ "train_regrLabels.txt", lines)  
+
+let writeRegrLabels fName data =  
+    data
+    |> List.map (fun (l,d) ->
+        d 
+        |> Array.splitInto 3
+        |> Array.map (Array.map float >> Array.average >> (fun v -> v / 255.))
+        |> fun a -> sprintf "|regrLabels\t%f\t%f\t%f" a.[0] a.[1] a.[2])
+    |> fun lines -> System.IO.File.WriteAllLines(__SOURCE_DIRECTORY__ @@ fName, lines)  
+ 
+writeRegrLabels "train_regrLabels.txt" trn
+writeRegrLabels "test_regrLabels.txt" test
+        
+
+// mean as png
+let saveMeanPng fName = Array3D.map byte >> saveAsPNG (width,height) (__SOURCE_DIRECTORY__ @@ fName)
+dataMeanTest |> saveMeanPng "test/mean.png"
+dataMeanTraining |> saveMeanPng "train/mean.png"
+
