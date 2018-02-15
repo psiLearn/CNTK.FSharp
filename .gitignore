@@ -286,3 +286,13 @@ __pycache__/
 *.btm.cs
 *.odx.cs
 *.xsd.cs
+
+
+build/CNTK.FSharp.dll
+examples/Cifar/[Cc]ifar-10-binary.tar.gz
+examples/Cifar/cifar-10-binary.tar
+examples/Cifar/cifar-10-binary/
+examples/Cifar/test/
+examples/Cifar/train/
+build/
+.vscode/

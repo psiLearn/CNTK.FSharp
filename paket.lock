@@ -7,3 +7,5 @@ NUGET
     CNTK.Deps.MKL (2.4)
     CNTK.Deps.OpenCV.Zip (2.4)
     FAKE (4.64.4)
+    FSharp.Data (2.4.4)
+    SharpZipLib (0.86)
