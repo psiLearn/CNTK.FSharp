@@ -191,14 +191,14 @@ let ResNetClassifier(
         // Global average pooling
         let poolW = 8
         let poolH = 8
-        let poolhStride = 1
-        let poolvStride = 1
+        let poolHStride = 1
+        let poolVStride = 1
         let pool = 
             CNTKLib.Pooling(
                 new Variable(rn3_3), 
                 PoolingType.Average,
                 shape [ poolW; poolH; 1 ], 
-                shape [ poolhStride; poolvStride; 1 ]
+                shape [ poolHStride; poolVStride; 1 ]
                 )
 
         // Output DNN layer
@@ -248,7 +248,7 @@ let ValidateModelWithMinibatchSource(
 
             let minibatchData = testMinibatchSource.GetNextMinibatch((uint32)batchSize, device)
 
-            if (minibatchData = null || minibatchData.Count = 0)
+            if (isNull minibatchData || minibatchData.Count = 0)
             then (total,errors)        
             else
 
@@ -300,11 +300,13 @@ let ValidateModelWithMinibatchSource(
 
 let CifarDataFolder = __SOURCE_DIRECTORY__
 
-let device = DeviceDescriptor.CPUDevice
+let device = 
+    //DeviceDescriptor.GPUDevice 0 // not working till now
+    DeviceDescriptor.CPUDevice
 
-let MaxEpochs = uint64 1
+let maxEpochs = uint64 1
 
-let imageDim = [| 32; 32; 3 |]
+let imageDims = [| 32; 32; 3 |]
 let numClasses = 10
 
 let CreateMinibatchSource(
@@ -312,7 +314,7 @@ let CreateMinibatchSource(
     meanFilePath : string,
     imageDims : int[], 
     numClasses : int, 
-    maxSweeps : uint64) =
+    maxEpochs : uint64) =
 
         let transforms = 
             List<CNTKDictionary>(
@@ -337,22 +339,25 @@ let CreateMinibatchSource(
 
         let config = 
             new MinibatchSourceConfig(List<CNTKDictionary> [ deserializerConfiguration ])
-        config.MaxSweeps <- maxSweeps
+        config.MaxSweeps <- maxEpochs
 
         CNTKLib.CreateCompositeMinibatchSource(config)
 
+let meanFilePath = Path.Combine(CifarDataFolder, "CIFAR-10_mean.xml")
+let mapFilePath = Path.Combine(CifarDataFolder, "train_map.txt")
 let minibatchSource = 
     CreateMinibatchSource(
-        Path.Combine(CifarDataFolder, "train_map.txt"),
-        Path.Combine(CifarDataFolder, "CIFAR-10_mean.xml"), 
-        imageDim, 
+        mapFilePath,
+        meanFilePath, 
+        imageDims, 
         numClasses, 
-        MaxEpochs)
+        maxEpochs)
+let mb = minibatchSource.GetNextMinibatch(1u)
 let imageStreamInfo = minibatchSource.StreamInfo("features")
 let labelStreamInfo = minibatchSource.StreamInfo("labels")
 
 // build a model
-let imageInput = CNTKLib.InputVariable(shape imageDim, imageStreamInfo.m_elementType, "Images")
+let imageInput = CNTKLib.InputVariable(shape imageDims, imageStreamInfo.m_elementType, "Images")
 let labelsVar = CNTKLib.InputVariable(shape [ numClasses ], labelStreamInfo.m_elementType, "Labels")
 let classifierOutput = ResNetClassifier(imageInput, numClasses, device, "classifierOutput")
 
@@ -375,12 +380,13 @@ let trainer =
             )
         )
 
-let minibatchSize = uint32 64
+//let minibatchSize = uint32 64
+let minibatchSize = uint32 64u
 let outputFrequencyInMinibatches = 20
 let miniBatchCount = 0
 
 let rec train step =
-
+    printfn "start training"
     let minibatchData = minibatchSource.GetNextMinibatch(minibatchSize, device)
 
     // Stop training once max epochs is reached.
@@ -400,6 +406,16 @@ let rec train step =
         let step = step + 1
         if step % outputFrequencyInMinibatches = 0
         then
+            printfn "Done %d steps sofar" step
+            Function.Combine(
+                List<Variable>(
+                    [
+                        new Variable(trainingLoss) 
+                        new Variable(prediction) 
+                        new Variable(classifierOutput) 
+                    ]), 
+                "ImageClassifier"
+                ).Save("temp.model")
             trainer
             |> Minibatch.summary 
             |> Minibatch.basicPrint
@@ -429,18 +445,18 @@ let testMinibatchSource =
     CreateMinibatchSource(
         Path.Combine(CifarDataFolder, "test_map.txt"),
         Path.Combine(CifarDataFolder, "CIFAR-10_mean.xml"), 
-        imageDim, numClasses, uint64 1)
+        imageDims, numClasses, uint64 1)
 
 ValidateModelWithMinibatchSource(
     modelFile, 
     testMinibatchSource,
-    imageDim, numClasses, "features", "labels", "classifierOutput", device, 1000)
+    imageDims, numClasses, "features", "labels", "classifierOutput", device, 1000)
 
 let total, errors = 
     ValidateModelWithMinibatchSource(
         modelFile, 
         testMinibatchSource,
-        imageDim, 
+        imageDims, 
         numClasses, 
         "features", 
         "labels", 
